@@ -188,7 +188,7 @@ declare @result table (
     ,object_name nvarchar(128)
     ,object_type nvarchar(128)
     ,seq int
-    ,ddl nvarchar(max)
+    ,sql_stmt nvarchar(max)
 )
 
 
@@ -201,7 +201,7 @@ if @use_statement_per_object = 0 begin
         ,object_name
         ,object_type
         ,seq
-        ,ddl
+        ,sql_stmt
     )
     select
         a.object_catalog
@@ -212,7 +212,7 @@ if @use_statement_per_object = 0 begin
         ,case b.seq
             when 1 then 'USE ' + quotename(a.object_catalog)
             when 2 then 'GO'
-        end as ddl
+        end as sql_stmt
     from (select distinct object_catalog from @defs) a
     cross apply (select 1 as seq union
                  select 2) b
@@ -224,7 +224,7 @@ else begin
         ,object_name
         ,object_type
         ,seq
-        ,ddl
+        ,sql_stmt
     )
     select
         a.object_catalog
@@ -236,7 +236,7 @@ else begin
             when 1 then 'USE ' + quotename(a.object_catalog)
             when 2 then 'GO'
             when 3 then ''
-        end as ddl
+        end as sql_stmt
     from @defs a
     cross apply (select 1 as seq union
                  select 2 union
@@ -252,7 +252,7 @@ if @has_drop = 1 begin
         ,object_name
         ,object_type
         ,seq
-        ,ddl
+        ,sql_stmt
     )
     select
         a.object_catalog
@@ -272,7 +272,7 @@ if @has_drop = 1 begin
             when b.seq = 3 then 'GO'
             when b.seq = 4 then ''
             else null
-        end as ddl
+        end as sql_stmt
     from @defs a
     cross apply (select 1 as seq union
                  select 2 union
@@ -323,14 +323,14 @@ if @has_definition = 1 begin
         ,object_name
         ,object_type
         ,seq
-        ,ddl
+        ,sql_stmt
     )
     select d.object_catalog
          , d.object_schema
          , d.object_name
          , d.object_type
          , p.seq + 500000000  -- start with a high sequence so that we can add header/footer sql
-         , substring(d.object_definition, p.start_idx, p.end_idx - p.start_idx) as ddl
+         , substring(d.object_definition, p.start_idx, p.end_idx - p.start_idx) as sql_stmt
     from @defs d
     join @ddl_parse p
             on d.object_id = p.object_id
@@ -343,7 +343,7 @@ if @has_definition = 1 begin
         ,object_name
         ,object_type
         ,seq
-        ,ddl
+        ,sql_stmt
     )
     select
         a.object_catalog
@@ -366,7 +366,7 @@ if @has_definition = 1 begin
             when b.seq = 6 then 'GO'
             when b.seq = 7 then ''
             else null
-        end as ddl
+        end as sql_stmt
         from @defs a
         cross apply (select 1 as seq union
                      select 2 union
@@ -382,7 +382,7 @@ if @has_definition = 1 begin
             ,object_name
             ,object_type
             ,seq
-            ,ddl
+            ,sql_stmt
         )
         select
             a.object_catalog
@@ -393,7 +393,7 @@ if @has_definition = 1 begin
             ,case b.seq
                 when 1 then 'GO'
                 when 2 then ''
-            end as ddl
+            end as sql_stmt
         from @defs a
         cross apply (select 1 as seq union
                      select 2) b
@@ -410,18 +410,18 @@ if @create_or_alter_header in ('create', 'alter', 'create or alter') begin
                  , patindex('%create%' +
                    case when object_type = 'PROCEDURE' then 'PROC'
                         else object_type
-                   end + '%' + object_schema + '%.%' + object_name + '%', ddl) as create_idx
+                   end + '%' + object_schema + '%.%' + object_name + '%', sql_stmt) as create_idx
             from @result
         ) a
         where create_idx > 0
     )
     update cte
-    set ddl = replace(case when ascii(left(ltrim(substring(ddl, create_idx + 6, 8000)), 1)) between 97 and 122
-                           then lower(@create_or_alter_header)
-                           else @create_or_alter_header
-                      end + ' ' + ltrim(substring(ddl, create_idx + 6, 8000))
-                      ,object_schema + '.' + object_name
-                      ,quotename(object_schema) + '.' + quotename(object_name))
+    set sql_stmt = replace(case when ascii(left(ltrim(substring(sql_stmt, create_idx + 6, 8000)), 1)) between 97 and 122
+                                then lower(@create_or_alter_header)
+                                else @create_or_alter_header
+                           end + ' ' + ltrim(substring(sql_stmt, create_idx + 6, 8000))
+                           ,object_schema + '.' + object_name
+                           ,quotename(object_schema) + '.' + quotename(object_name))
     where rn = 1
 end
 
@@ -431,12 +431,12 @@ if @extra_line_breaks = 0 begin
     -- remove blank lines
     delete from @result
     where seq / 100000000 <> 5
-    and ddl = ''
+    and sql_stmt = ''
 end
 
 -- Return the result data ======================================================
 delete from @result
-where ddl is null
+where sql_stmt is null
 
 select *
 from @result r
