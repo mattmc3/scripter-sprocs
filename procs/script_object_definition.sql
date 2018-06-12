@@ -1,5 +1,5 @@
 if objectproperty(object_id('dbo.script_object_definition'), 'IsProcedure') is null begin
-    exec('dbo.script_object_definition as')
+    exec('create proc dbo.script_object_definition as')
 end
 go
 --------------------------------------------------------------------------------
@@ -267,7 +267,7 @@ if @has_drop = 1 begin
                     when 'PROCEDURE' then 'StoredProcedure'
                     when 'FUNCTION' then 'UserDefinedFunction'
                     else ''
-                end + ' ' + a.quoted_name + space(4) + 'Script Date: ' + strnow + ' ******/'
+                end + ' ' + a.quoted_name + space(4) + 'Script Date: ' + @strnow + ' ******/'
             when b.seq = 2 then 'DROP ' + a.object_type + ' ' + a.quoted_name
             when b.seq = 3 then 'GO'
             when b.seq = 4 then ''
@@ -446,7 +446,3 @@ order by 4, 1, 2, 3, 5
 
 end
 go
-
---exec master.dbo.script_object_definition 'outcomes_mart', @create_or_alter_header='drop'
---exec master.dbo.script_object_definition 'outcomes_mart', @create_or_alter_header='create', @object_name = 'regex_matches'
---exec master.dbo.script_object_definition 'outcomes_mart', @create_or_alter_header='drop and create'

@@ -1,5 +1,5 @@
 if objectproperty(object_id('dbo.script_table'), 'IsProcedure') is null begin
-    exec('dbo.script_table as')
+    exec('create proc dbo.script_table as')
 end
 go
 --------------------------------------------------------------------------------
@@ -624,12 +624,3 @@ order by 1, 2, 3, 4, 5
 --select * from @col_info
 end
 go
-
--- testing
-exec dbo.script_table 'CREATE', @table_name='CommandLog'
--- exec dbo.script_table 'DELETE', @table_name='CommandLog'
--- exec dbo.script_table 'DROP', @table_name='CommandLog'
--- exec dbo.script_table 'SELECT', @table_name='CommandLog'
--- exec dbo.script_table 'UPDATE', @table_name='CommandLog'
--- exec dbo.script_table 'INSERT', @table_name='CommandLog'
-
