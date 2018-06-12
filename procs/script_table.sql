@@ -12,7 +12,7 @@ go
 --           https://github.com/mattmc3/sqlgen-procs/blob/master/LICENSE
 -- params  : @script_type - The type of script to generate. Valid values are
 --                          'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP',
---                          'CREATE', 'DROP AND CREATE'
+--                          'CREATE'
 --           @database_name - The name of the database where the table(s) to
 --                            script reside. Optional - defaults to current db
 --           @table_name - The name of the table to script. Optional - defaults
@@ -20,6 +20,14 @@ go
 --           @schema_name - The name of the schema for scripting tables.
 --                          Optional - defaults to all schemas, or 'dbo' if
 --                          @table_name was specified.
+-- todos  : - support 'DROP AND CREATE'
+--          - support all features of a table in a 'CREATE'
+--              * NOT FOR REPLICATION
+--              * Alternate IDENTITY seeds
+--              * DEFAULT constraints
+--              * TEXTIMAGE_ON
+--              * Indexes
+--              * Computed columns
 --------------------------------------------------------------------------------
 alter procedure dbo.script_table
     @script_type nvarchar(128)
@@ -56,6 +64,11 @@ select @strnow = cast(datepart(month, @now) as nvarchar(2)) + '/' +
 select @database_name = isnull(@database_name, db_name())
 if @table_name is not null begin
     select @schema_name = isnull(@schema_name, 'dbo')
+end
+
+if @script_type not in ('CREATE', 'DROP', 'DELETE', 'INSERT', 'SELECT', 'UPDATE') begin
+    raiserror('The @script_type values supported are: (''CREATE'', ''DROP'', ''DELETE'', ''INSERT'', ''SELECT'', and ''UPDATE'')', 16, 10)
+    return
 end
 
 -- make helper table of 20 numbers (0-19)
@@ -282,6 +295,50 @@ update @col_info
             else data_type + isnull('(' + data_type_size + ')', '')
        end
 
+
+-- get sys.extended_propertied =================================================
+declare @ext_prop table (
+     [class] tinyint
+    ,[class_desc] nvarchar(60)
+    ,[major_id] int
+    ,[minor_id] int
+    ,[name] nvarchar(128)
+    ,[value] sql_variant
+)
+
+-- based on running `sp_helptext 'information_schema.tables'` in master
+if @script_type in ('CREATE') begin
+    set @sql = 'use ' + quotename(@database_name) + ';
+        select [class]
+             , [class_desc]
+             , [major_id]
+             , [minor_id]
+             , [name]
+             , [value]
+          into ##__ext_prop__D78CEAA3__
+          from sys.extended_properties ep
+    '
+    if object_id('tempdb..##__ext_prop__D78CEAA3__') is not null drop table ##__ext_prop__D78CEAA3__
+    exec sp_executesql @sql
+
+    insert into @ext_prop (
+        [class]
+        ,[class_desc]
+        ,[major_id]
+        ,[minor_id]
+        ,[name]
+        ,[value]
+    )
+    select [class]
+        , [class_desc]
+        , [major_id]
+        , [minor_id]
+        , [name]
+        , [value]
+    from ##__ext_prop__D78CEAA3__ t
+    drop table ##__ext_prop__D78CEAA3__
+end
+
 -- assemble result =============================================================
 declare @result table (
      table_catalog nvarchar(128)
@@ -310,8 +367,7 @@ select ti.table_catalog
 
 
 -- comment =====================================================================
--- just DROPs for now
-if @script_type in ('DROP') begin
+if @script_type in ('DROP', 'CREATE') begin
     insert into @result
     select ti.table_catalog
          , ti.table_schema
@@ -323,6 +379,59 @@ if @script_type in ('DROP') begin
                 else 'Table'
            end + ' ' + ti.quoted_table_name + space(4) + 'Script Date: ' + @strnow + ' ******/' as sql_stmt
     from @tbl_info ti
+end
+
+
+-- CREATE ======================================================================
+if @script_type in ('CREATE') begin
+    insert into @result
+    select ti.table_catalog
+         , ti.table_schema
+         , ti.table_name
+         , ti.table_type
+         , 250000000 + n.num as seq
+         , case n.num
+             when 0 then 'SET ANSI_NULLS ON'
+             when 1 then 'GO'
+             when 2 then ''
+             when 3 then 'SET QUOTED_IDENTIFIER ON'
+             when 4 then 'GO'
+             when 5 then ''
+           end as sql_stmt
+      from @tbl_info ti
+     cross apply (select * from @nums x where x.num < 6) n
+
+    insert into @result
+    select ti.table_catalog
+         , ti.table_schema
+         , ti.table_name
+         , ti.table_type
+         , 350000000 as seq
+         , 'CREATE TABLE ' + ti.quoted_table_name + '(' as sql_stmt
+    from @tbl_info ti
+
+    insert into @result
+    select ci.table_catalog
+         , ci.table_schema
+         , ci.table_name
+         , ci.table_type
+         , 400000000 + ci.ordinal_position as seq
+         , space(4) + ci.quoted_column_name + ' ' +
+           quotename(ci.user_data_type) +
+           case when ci.user_data_type = ci.data_type then isnull('(' + ci.data_type_size + ')', '') else '' end +
+           case when ci.is_identity = 1 then ' IDENTITY(1,1)' else '' end +
+           case when ci.is_nullable = 0 then ' NOT' else '' end + ' NULL,' as sql_stmt
+     from @col_info ci
+
+    insert into @result
+    select ti.table_catalog
+         , ti.table_schema
+         , ti.table_name
+         , ti.table_type
+         , 800000000 as seq
+         , ') ON ' + quotename(ti.file_group) as sql_stmt
+    from @tbl_info ti
+
 end
 
 
@@ -349,7 +458,7 @@ end
 
 
 -- DROP ========================================================================
-if @script_type in ('DROP') begin
+if @script_type in ('DROP', 'DROP AND CREATE') begin
     insert into @result
     select ti.table_catalog
          , ti.table_schema
@@ -517,9 +626,10 @@ end
 go
 
 -- testing
-exec dbo.script_table 'DELETE', @table_name='CommandLog'
-exec dbo.script_table 'DROP', @table_name='CommandLog'
-exec dbo.script_table 'SELECT', @table_name='CommandLog'
-exec dbo.script_table 'UPDATE', @table_name='CommandLog'
-exec dbo.script_table 'INSERT', @table_name='CommandLog'
+exec dbo.script_table 'CREATE', @table_name='CommandLog'
+-- exec dbo.script_table 'DELETE', @table_name='CommandLog'
+-- exec dbo.script_table 'DROP', @table_name='CommandLog'
+-- exec dbo.script_table 'SELECT', @table_name='CommandLog'
+-- exec dbo.script_table 'UPDATE', @table_name='CommandLog'
+-- exec dbo.script_table 'INSERT', @table_name='CommandLog'
 
