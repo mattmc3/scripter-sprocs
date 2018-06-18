@@ -1,49 +1,40 @@
-if objectproperty(object_id('dbo.script_table'), 'IsProcedure') is null begin
-    exec('create proc dbo.script_table as')
+if objectproperty(object_id('dbo.script_indexes'), 'IsProcedure') is null begin
+    exec('create proc dbo.script_indexes as')
 end
 go
 --------------------------------------------------------------------------------
--- proc    : script_table
+-- proc    : script_indexes
 -- author  : mattmc3
 -- version : v0.2.0-20180612
--- purpose : Generates SQL scripts for tables. Mimics SSMS "Script Table as"
---           behavior.
+-- purpose : Generates index scripts for tables.
 -- license : MIT
 --           https://github.com/mattmc3/sqlgen-procs/blob/master/LICENSE
--- params  : @script_type - The type of script to generate. Valid values are
---                          'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP',
---                          'CREATE'
---           @database_name - The name of the database where the table(s) to
+-- params  : @database_name - The name of the database where the table(s) to
 --                            script reside. Optional - defaults to current db
 --           @table_name - The name of the table to script. Optional - defaults
 --                         to all tables in the database.
---           @schema_name - The name of the schema for scripting tables.
+--           @schema_name - The name of the schema for scripting table indexes.
 --                          Optional - defaults to all schemas, or 'dbo' if
 --                          @table_name was specified.
--- todos  : - support 'DROP AND CREATE'
---          - support all features of a table in a 'CREATE'
---              * NOT FOR REPLICATION
---              * Alternate IDENTITY seeds
---              * DEFAULT constraints
---              * TEXTIMAGE_ON
---              * Indexes
---              * Computed columns
+--           @index_name - The name of the index to script. Optional - returns
+--                         all indexes if not specified.
+-- todos  : All the things
 --------------------------------------------------------------------------------
-alter procedure dbo.script_table
-    @script_type nvarchar(128)
-    ,@database_name nvarchar(128) = null
+alter procedure dbo.script_indexes
+     @database_name nvarchar(128) = null
     ,@table_name nvarchar(128) = null
     ,@schema_name nvarchar(128) = null
+    ,@index_name nvarchar(128) = null
 as
 begin
 
 set nocount on
 
 -- #DEBUG
--- declare @script_type nvarchar(128) = 'SELECT'
---       , @database_name nvarchar(128) = null
+-- declare @database_name nvarchar(128) = null
 --       , @table_name nvarchar(128) = null
 --       , @schema_name nvarchar(128) = null
+--       , @index_name nvarchar(128) = null
 
 -- vars
 declare @sql nvarchar(max)
@@ -66,11 +57,6 @@ if @table_name is not null begin
     select @schema_name = isnull(@schema_name, 'dbo')
 end
 
-if @script_type not in ('CREATE', 'DROP', 'DELETE', 'INSERT', 'SELECT', 'UPDATE') begin
-    raiserror('The @script_type values supported are: (''CREATE'', ''DROP'', ''DELETE'', ''INSERT'', ''SELECT'', and ''UPDATE'')', 16, 10)
-    return
-end
-
 -- make helper table of 20 numbers (0-19)
 declare @nums table (num int)
 ;with numbers as (
@@ -85,266 +71,130 @@ select num
 from numbers n
 
 
--- sysobjects ==================================================================
-set @sql = 'use ' + quotename(@database_name) + ';' + @CRLF +
-           'select * into ##__sysobjects_D78CEAA3__ from sysobjects'
-if object_id('tempdb..##__sysobjects_D78CEAA3__') is not null drop table ##__sysobjects_D78CEAA3__
-exec sp_executesql @sql
-
-
--- systables ===================================================================
-declare @tbl_info table (
-     mssql_object_id   int
-    ,table_catalog     nvarchar(128)
-    ,table_schema      nvarchar(128)
-    ,table_name        nvarchar(128)
-    ,quoted_table_name nvarchar(256)
-    ,table_type        nvarchar(128)
-    ,created_at        datetime
-    ,updated_at        datetime
-    ,file_group        nvarchar(128)
+-- get index metadata ==========================================================
+declare @idx table (
+     mssql_object_id      int
+    ,table_catalog        nvarchar(128)
+    ,table_schema         nvarchar(128)
+    ,table_name           nvarchar(128)
+    ,index_name           nvarchar(128)
+    ,table_type           varchar(10)
+    ,is_ms_shipped        bit
+    ,file_group           nvarchar(128)
+    ,index_id             int
+    ,[type]               tinyint
+    ,[type_desc]          nvarchar(60)
+    ,is_unique            bit
+    ,data_space_id        int
+    ,[ignore_dup_key]     bit
+    ,is_primary_key       bit
+    ,is_unique_constraint bit
+    ,fill_factor          tinyint
+    ,is_padded            bit
+    ,is_disabled          bit
+    ,is_hypothetical      bit
+    ,[allow_row_locks]    bit
+    ,[allow_page_locks]   bit
+    ,has_filter           bit
+    ,filter_definition    nvarchar(max)
+    ,[compression_delay]  int
 )
 
--- based on running `sp_helptext 'information_schema.tables'` in master
 set @sql = 'use ' + quotename(@database_name) + ';
-    select
-        o.object_id     as mssql_object_id
-        ,db_name()      as table_catalog
-        ,s.name         as table_schema
-        ,o.name         as table_name
-        ,case o.type
-            when ''U'' then ''BASE TABLE''
-            when ''V'' then ''VIEW''
-        end as table_type
-        ,o.create_date as created_at
-        ,o.modify_date as updated_at
-        ,isnull(filegroup_name(t.filestream_data_space_id), ''PRIMARY'') as file_group
-    into ##__tbls__D78CEAA3__
-    from sys.objects o
-    left join sys.tables t
-        on o.object_id = t.object_id
-    left join sys.schemas s
-        on s.schema_id = o.schema_id
+    select o.object_id as mssql_object_id
+         , db_name()   as table_catalog
+         , s.name      as table_schema
+         , o.name      as table_name
+         , i.name      as index_name
+         , case o.type
+                when ''U'' then ''BASE TABLE''
+                when ''V'' then ''VIEW''
+            end as table_type
+         , t.is_ms_shipped
+         , isnull(filegroup_name(t.filestream_data_space_id), ''PRIMARY'') as file_group
+         , i.index_id
+         , i.type
+         , i.type_desc
+         , i.is_unique
+         , i.data_space_id
+         , i.ignore_dup_key
+         , i.is_primary_key
+         , i.is_unique_constraint
+         , i.fill_factor
+         , i.is_padded
+         , i.is_disabled
+         , i.is_hypothetical
+         , i.allow_row_locks
+         , i.allow_page_locks
+         , i.has_filter
+         , i.filter_definition
+         , i.compression_delay
+    from sys.indexes i
+    join sys.objects o  on i.object_id = o.object_id
+    join sys.tables t   on o.object_id = t.object_id
+    join sys.schemas s  on s.schema_id = o.schema_id
     where o.type in (''U'', ''V'')
+    order by 2, 3, 4, 5
 '
-if object_id('tempdb..##__tbls__D78CEAA3__') is not null drop table ##__tbls__D78CEAA3__
+if object_id('tempdb..##__idx__23D182FE__') is not null drop table ##__idx__23D182FE__
 exec sp_executesql @sql
 
-insert into @tbl_info (
-     mssql_object_id
-    ,table_catalog
-    ,table_schema
-    ,table_name
-    ,quoted_table_name
-    ,table_type
-    ,created_at
-    ,updated_at
-    ,file_group
-)
-select mssql_object_id
-     , table_catalog
-     , table_schema
-     , table_name
-     , quotename(table_schema) + '.' + quotename(table_name) as quoted_table_name
-     , table_type
-     , created_at
-     , updated_at
-     , file_group
-from ##__tbls__D78CEAA3__ t
-drop table ##__tbls__D78CEAA3__
+insert into @idx select * from ##__idx__23D182FE__ t
+drop table ##__idx__23D182FE__
 
 
--- get info_schema columns =====================================================
-declare @col_info table (
-     mssql_object_id            int
-    ,mssql_column_id            int
-    ,table_catalog              nvarchar(128)
-    ,table_schema               nvarchar(128)
-    ,table_name                 nvarchar(128)
-    ,quoted_table_name          nvarchar(256)
-    ,table_type                 nvarchar(128)
-    ,column_name                nvarchar(128)
-    ,quoted_column_name         nvarchar(256)
-    ,ordinal_position           int
-    ,column_default             nvarchar(4000)
-    ,is_nullable                bit
-    ,data_type                  nvarchar(128)
-    ,user_data_type             nvarchar(128)
-    ,sql_full_data_type         nvarchar(128)
-    ,data_type_size             nvarchar(128)
-    ,character_maximum_length   int
-    ,numeric_precision          int
-    ,numeric_scale              int
-    ,datetime_precision         int
-    ,is_computed                bit
-    ,computed_column_definition nvarchar(max)
-    ,is_identity                bit
-    ,is_modifiable              bit
+-- get index column metadata ===================================================
+declare @idx_cols table (
+     mssql_object_id    int
+    ,table_catalog      nvarchar(128)
+    ,table_schema       nvarchar(128)
+    ,table_name         nvarchar(128)
+    ,index_name         nvarchar(128)
+    ,table_type         varchar(10)
+    ,column_id          int
+    ,column_name        nvarchar(128)
+    ,index_id           int
+    ,index_column_id    int
+    ,key_ordinal        tinyint
+    ,partition_ordinal  tinyint
+    ,is_descending_key  bit
+    ,is_included_column bit
 )
 
--- based on running `sp_helptext 'information_schema.columns'` in master
 set @sql = 'use ' + quotename(@database_name) + ';
-    select
-        o.object_id as mssql_object_id
-        ,c.column_id as mssql_column_id
-        ,db_name() as table_catalog
-        ,schema_name(o.schema_id) as table_schema
-        ,o.name as table_name
-        ,case o.type
-            when ''U'' then ''BASE TABLE''
-            when ''V'' then ''VIEW''
-        end as table_type
-        ,c.name as column_name
-        ,columnproperty(c.object_id, c.name, ''ordinal'') as ordinal_position
-        ,convert(nvarchar(4000), object_definition(c.default_object_id)) as column_default
-        ,c.is_nullable as is_nullable
-        ,isnull(type_name(c.system_type_id), t.name) as data_type
-        ,isnull(type_name(c.user_type_id), t.name) as user_data_type
-        ,columnproperty(c.object_id, c.name, ''charmaxlen'') as character_maximum_length
-        ,convert(tinyint,
-            case
-                -- int/decimal/numeric/real/float/money
-                when c.system_type_id in (48, 52, 56, 59, 60, 62, 106, 108, 122, 127)
-                then c.precision
-            end) as numeric_precision
-        ,convert(int,
-            case
-                -- datetime/smalldatetime
-                when c.system_type_id in (40, 41, 42, 43, 58, 61) then null
-                else odbcscale(c.system_type_id, c.scale)
-            end) as numeric_scale
-        ,convert(smallint,
-            case
-                -- datetime/smalldatetime
-                when c.system_type_id in (40, 41, 42, 43, 58, 61)
-                then odbcscale(c.system_type_id, c.scale)
-            end) as datetime_precision
-
-        ,c.is_computed as is_computed
-        ,cc.definition as computed_column_definition
-        ,c.is_identity as is_identity
-    into ##__cols__D78CEAA3__
-    from sys.objects o
-    join sys.columns c                on c.object_id = o.object_id
-    left join sys.types t             on c.user_type_id = t.user_type_id
-    left join sys.computed_columns cc on cc.object_id = o.object_id
-                                     and cc.column_id = c.column_id
+    select o.object_id as mssql_object_id
+         , db_name()   as table_catalog
+         , s.name      as table_schema
+         , o.name      as table_name
+         , i.name      as index_name
+         , case o.type
+                when ''U'' then ''BASE TABLE''
+                when ''V'' then ''VIEW''
+            end as table_type
+        , c.column_id
+        , c.name as column_name
+        , ic.index_id
+        , ic.index_column_id
+        , ic.key_ordinal
+        , ic.partition_ordinal
+        , ic.is_descending_key
+        , ic.is_included_column
+    from sys.index_columns ic
+    join sys.indexes i  on ic.object_id = i.object_id
+                       and ic.index_id = i.index_id
+    join sys.objects o  on i.object_id = o.object_id
+    join sys.schemas s  on s.schema_id = o.schema_id
+    join sys.columns c  on ic.object_id = c.object_id
+                       and ic.column_id = c.column_id
     where o.type in (''U'', ''V'')
+    order by 2, 3, 4, 5, ic.index_id, ic.key_ordinal
 '
-if object_id('tempdb..##__cols__D78CEAA3__') is not null drop table ##__cols__D78CEAA3__
+if object_id('tempdb..##__idx_cols__23D182FE__') is not null drop table ##__idx_cols__23D182FE__
 exec sp_executesql @sql
 
-insert into @col_info (
-     mssql_object_id
-    ,mssql_column_id
-    ,table_catalog
-    ,table_schema
-    ,table_name
-    ,quoted_table_name
-    ,table_type
-    ,column_name
-    ,quoted_column_name
-    ,ordinal_position
-    ,column_default
-    ,is_nullable
-    ,data_type
-    ,user_data_type
-    ,sql_full_data_type
-    ,data_type_size
-    ,character_maximum_length
-    ,numeric_precision
-    ,numeric_scale
-    ,datetime_precision
-    ,is_computed
-    ,computed_column_definition
-    ,is_identity
-    ,is_modifiable
-)
-select mssql_object_id
-     , mssql_column_id
-     , table_catalog
-     , table_schema
-     , table_name
-     , quotename(table_schema) + '.' + quotename(table_name) as quoted_table_name
-     , table_type
-     , column_name
-     , quotename(column_name) as quoted_column_name
-     , ordinal_position
-     , column_default
-     , is_nullable
-     , data_type
-     , user_data_type
-     , null as sql_full_data_type
-     , case when t.data_type in ('binary', 'char', 'nchar', 'nvarchar', 'varbinary', 'varchar')
-           then isnull(nullif(cast(t.character_maximum_length as varchar(4)), '-1'), 'max')
-           when t.data_type in ('decimal', 'numeric')
-           then cast(t.numeric_precision as varchar(10)) + ',' + cast(t.numeric_scale as varchar(10))
-           when t.data_type in ('datetime2', 'datetimeoffset', 'time')
-           then cast(t.datetime_precision as varchar(10))
-           else null
-       end as data_type_size
-     , character_maximum_length
-     , numeric_precision
-     , numeric_scale
-     , datetime_precision
-     , is_computed
-     , computed_column_definition
-     , is_identity
-     , case when is_identity = 1 or is_computed = 1 or data_type = 'timestamp' then 0
-            else 1
-       end as is_modifiable
-from ##__cols__D78CEAA3__ t
-drop table ##__cols__D78CEAA3__
+insert into @idx_cols select * from ##__idx_cols__23D182FE__ t
+drop table ##__idx_cols__23D182FE__
 
-update @col_info
-   set sql_full_data_type =
-       case when user_data_type <> data_type then user_data_type
-            else data_type + isnull('(' + data_type_size + ')', '')
-       end
-
-
--- get sys.extended_propertied =================================================
-declare @ext_prop table (
-     [class] tinyint
-    ,[class_desc] nvarchar(60)
-    ,[major_id] int
-    ,[minor_id] int
-    ,[name] nvarchar(128)
-    ,[value] sql_variant
-)
-
--- based on running `sp_helptext 'information_schema.tables'` in master
-if @script_type in ('CREATE') begin
-    set @sql = 'use ' + quotename(@database_name) + ';
-        select [class]
-             , [class_desc]
-             , [major_id]
-             , [minor_id]
-             , [name]
-             , [value]
-          into ##__ext_prop__D78CEAA3__
-          from sys.extended_properties ep
-    '
-    if object_id('tempdb..##__ext_prop__D78CEAA3__') is not null drop table ##__ext_prop__D78CEAA3__
-    exec sp_executesql @sql
-
-    insert into @ext_prop (
-        [class]
-        ,[class_desc]
-        ,[major_id]
-        ,[minor_id]
-        ,[name]
-        ,[value]
-    )
-    select [class]
-        , [class_desc]
-        , [major_id]
-        , [minor_id]
-        , [name]
-        , [value]
-    from ##__ext_prop__D78CEAA3__ t
-    drop table ##__ext_prop__D78CEAA3__
-end
 
 -- assemble result =============================================================
 declare @result table (
