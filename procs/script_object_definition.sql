@@ -5,7 +5,7 @@ go
 --------------------------------------------------------------------------------
 -- proc    : script_object_definition
 -- author  : mattmc3
--- version : v0.2.0-20180612
+-- version : v0.3.0-20180709
 -- purpose : Generates SQL scripts for objects with SQL definitions.
 --           Specifically views, sprocs, and user defined funcs.
 --           Mimics SSMS scripting behavior.

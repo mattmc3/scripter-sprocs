@@ -5,7 +5,7 @@ go
 --------------------------------------------------------------------------------
 -- proc    : script_table
 -- author  : mattmc3
--- version : v0.2.0-20180612
+-- version : v0.3.0-20180709
 -- purpose : Generates SQL scripts for tables. Mimics SSMS "Script Table as"
 --           behavior.
 -- license : MIT
@@ -13,14 +13,19 @@ go
 -- params  : @script_type - The type of script to generate. Valid values are
 --                          'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP',
 --                          'CREATE'
---           @database_name - The name of the database where the table(s) to
---                            script reside. Optional - defaults to current db
+--           @db_name - The name of the database where the table(s) to
+--                      script reside. Optional - defaults to current db
 --           @table_name - The name of the table to script. Optional - defaults
 --                         to all tables in the database.
 --           @schema_name - The name of the schema for scripting tables.
 --                          Optional - defaults to all schemas, or 'dbo' if
 --                          @table_name was specified.
 -- todos  : - support 'DROP AND CREATE'
+--          - Custom SQL
+--              * No comments
+--              * No extra newlines
+--              * SQL formatting
+--          - support for create view?
 --          - support all features of a table in a 'CREATE'
 --              * NOT FOR REPLICATION
 --              * Alternate IDENTITY seeds
@@ -28,10 +33,11 @@ go
 --              * TEXTIMAGE_ON
 --              * Indexes
 --              * Computed columns
+--              * Foreign keys
 --------------------------------------------------------------------------------
 alter procedure dbo.script_table
     @script_type nvarchar(128)
-    ,@database_name nvarchar(128) = null
+    ,@db_name nvarchar(128) = null
     ,@table_name nvarchar(128) = null
     ,@schema_name nvarchar(128) = null
 as
@@ -39,17 +45,12 @@ begin
 
 set nocount on
 
--- #DEBUG
--- declare @script_type nvarchar(128) = 'SELECT'
---       , @database_name nvarchar(128) = null
---       , @table_name nvarchar(128) = null
---       , @schema_name nvarchar(128) = null
-
 -- vars
 declare @sql nvarchar(max)
       , @now datetime = getdate()
       , @strnow nvarchar(50)
       , @CRLF nvarchar(2) = nchar(13) + nchar(10)
+      , @APOS nvarchar(1) = ''''
 
 -- don't rely on FORMAT() since early SQL Server is missing it
 select @strnow = cast(datepart(month, @now) as nvarchar(2)) + '/' +
@@ -61,7 +62,7 @@ select @strnow = cast(datepart(month, @now) as nvarchar(2)) + '/' +
                  case when datepart(hour, @now) < 12 then 'AM' else 'PM' end
 
 -- defaults
-select @database_name = isnull(@database_name, db_name())
+select @db_name = isnull(@db_name, db_name())
 if @table_name is not null begin
     select @schema_name = isnull(@schema_name, 'dbo')
 end
@@ -71,107 +72,87 @@ if @script_type not in ('CREATE', 'DROP', 'DELETE', 'INSERT', 'SELECT', 'UPDATE'
     return
 end
 
--- make helper table of 20 numbers (0-19)
+-- make helper table of 100 numbers (0-99)
 declare @nums table (num int)
 ;with numbers as (
     select 0 as num
     union all
     select num + 1
     from numbers
-    where num <= 20
+    where num + 1 <= 99
 )
 insert into @nums
 select num
 from numbers n
+option (maxrecursion 100)
 
 
--- sysobjects ==================================================================
-set @sql = 'use ' + quotename(@database_name) + ';' + @CRLF +
-           'select * into ##__sysobjects_D78CEAA3__ from sysobjects'
-if object_id('tempdb..##__sysobjects_D78CEAA3__') is not null drop table ##__sysobjects_D78CEAA3__
-exec sp_executesql @sql
-
-
--- systables ===================================================================
-declare @tbl_info table (
+-- Get metadata ===============================================================
+-- one row per table
+-- based on running `sp_helptext 'information_schema.tables'` in master
+if object_id('tempdb..##tbl_info_D78CEAA3') is not null drop table ##tbl_info_D78CEAA3
+create table ##tbl_info_D78CEAA3 (
      mssql_object_id   int
     ,table_catalog     nvarchar(128)
     ,table_schema      nvarchar(128)
     ,table_name        nvarchar(128)
-    ,quoted_table_name nvarchar(256)
     ,table_type        nvarchar(128)
     ,created_at        datetime
     ,updated_at        datetime
     ,file_group        nvarchar(128)
 )
 
--- based on running `sp_helptext 'information_schema.tables'` in master
-set @sql = 'use ' + quotename(@database_name) + ';
-    select
-        o.object_id     as mssql_object_id
-        ,db_name()      as table_catalog
-        ,s.name         as table_schema
-        ,o.name         as table_name
-        ,case o.type
-            when ''U'' then ''BASE TABLE''
-            when ''V'' then ''VIEW''
-        end as table_type
-        ,o.create_date as created_at
-        ,o.modify_date as updated_at
-        ,isnull(filegroup_name(t.filestream_data_space_id), ''PRIMARY'') as file_group
-    into ##__tbls__D78CEAA3__
-    from sys.objects o
-    left join sys.tables t
-        on o.object_id = t.object_id
-    left join sys.schemas s
-        on s.schema_id = o.schema_id
-    where o.type in (''U'', ''V'')
+-- global temp table trick...
+set @sql = N'
+use ' + quotename(@db_name) + ';
+insert into ##tbl_info_D78CEAA3
+select
+    o.object_id     as mssql_object_id
+    ,db_name()      as table_catalog
+    ,s.name         as table_schema
+    ,o.name         as table_name
+    ,case o.type
+        when ''U'' then ''TABLE''
+        when ''V'' then ''VIEW''
+    end as table_type
+    ,o.create_date as created_at
+    ,o.modify_date as updated_at
+    ,isnull(filegroup_name(t.filestream_data_space_id), ''PRIMARY'') as file_group
+from sys.objects o
+left join sys.tables t
+    on o.object_id = t.object_id
+left join sys.schemas s
+    on s.schema_id = o.schema_id
+where o.type in (''U'', ''V'')
 '
-if object_id('tempdb..##__tbls__D78CEAA3__') is not null drop table ##__tbls__D78CEAA3__
 exec sp_executesql @sql
 
-insert into @tbl_info (
-     mssql_object_id
-    ,table_catalog
-    ,table_schema
-    ,table_name
-    ,quoted_table_name
-    ,table_type
-    ,created_at
-    ,updated_at
-    ,file_group
-)
-select mssql_object_id
-     , table_catalog
-     , table_schema
-     , table_name
-     , quotename(table_schema) + '.' + quotename(table_name) as quoted_table_name
-     , table_type
-     , created_at
-     , updated_at
-     , file_group
-from ##__tbls__D78CEAA3__ t
-drop table ##__tbls__D78CEAA3__
+if object_id('tempdb..#tbl_info') is not null drop table #tbl_info
+select *
+     , quotename(t.table_schema) + '.' + quotename(t.table_name) as quoted_table_name
+into #tbl_info
+from ##tbl_info_D78CEAA3 t
+
+if object_id('tempdb..##tbl_info_D78CEAA3') is not null drop table ##tbl_info_D78CEAA3
 
 
--- get info_schema columns =====================================================
-declare @col_info table (
+-- Get column info
+-- one row per column
+-- based on running `sp_helptext 'information_schema.columns'` in master
+if object_id('tempdb..##col_info_D78CEAA3') is not null drop table ##col_info_D78CEAA3
+create table ##col_info_D78CEAA3 (
      mssql_object_id            int
     ,mssql_column_id            int
     ,table_catalog              nvarchar(128)
     ,table_schema               nvarchar(128)
     ,table_name                 nvarchar(128)
-    ,quoted_table_name          nvarchar(256)
     ,table_type                 nvarchar(128)
     ,column_name                nvarchar(128)
-    ,quoted_column_name         nvarchar(256)
     ,ordinal_position           int
     ,column_default             nvarchar(4000)
     ,is_nullable                bit
-    ,data_type                  nvarchar(128)
+    ,system_data_type           nvarchar(128)
     ,user_data_type             nvarchar(128)
-    ,sql_full_data_type         nvarchar(128)
-    ,data_type_size             nvarchar(128)
     ,character_maximum_length   int
     ,numeric_precision          int
     ,numeric_scale              int
@@ -179,172 +160,104 @@ declare @col_info table (
     ,is_computed                bit
     ,computed_column_definition nvarchar(max)
     ,is_identity                bit
-    ,is_modifiable              bit
 )
 
--- based on running `sp_helptext 'information_schema.columns'` in master
-set @sql = 'use ' + quotename(@database_name) + ';
-    select
-        o.object_id as mssql_object_id
-        ,c.column_id as mssql_column_id
-        ,db_name() as table_catalog
-        ,schema_name(o.schema_id) as table_schema
-        ,o.name as table_name
-        ,case o.type
-            when ''U'' then ''BASE TABLE''
-            when ''V'' then ''VIEW''
-        end as table_type
-        ,c.name as column_name
-        ,columnproperty(c.object_id, c.name, ''ordinal'') as ordinal_position
-        ,convert(nvarchar(4000), object_definition(c.default_object_id)) as column_default
-        ,c.is_nullable as is_nullable
-        ,isnull(type_name(c.system_type_id), t.name) as data_type
-        ,isnull(type_name(c.user_type_id), t.name) as user_data_type
-        ,columnproperty(c.object_id, c.name, ''charmaxlen'') as character_maximum_length
-        ,convert(tinyint,
-            case
-                -- int/decimal/numeric/real/float/money
-                when c.system_type_id in (48, 52, 56, 59, 60, 62, 106, 108, 122, 127)
-                then c.precision
-            end) as numeric_precision
-        ,convert(int,
-            case
-                -- datetime/smalldatetime
-                when c.system_type_id in (40, 41, 42, 43, 58, 61) then null
-                else odbcscale(c.system_type_id, c.scale)
-            end) as numeric_scale
-        ,convert(smallint,
-            case
-                -- datetime/smalldatetime
-                when c.system_type_id in (40, 41, 42, 43, 58, 61)
-                then odbcscale(c.system_type_id, c.scale)
-            end) as datetime_precision
-
-        ,c.is_computed as is_computed
-        ,cc.definition as computed_column_definition
-        ,c.is_identity as is_identity
-    into ##__cols__D78CEAA3__
-    from sys.objects o
-    join sys.columns c                on c.object_id = o.object_id
-    left join sys.types t             on c.user_type_id = t.user_type_id
-    left join sys.computed_columns cc on cc.object_id = o.object_id
-                                     and cc.column_id = c.column_id
-    where o.type in (''U'', ''V'')
+set @sql = N'
+use ' + quotename(@db_name) + ';
+insert into ##col_info_D78CEAA3
+select
+    o.object_id as mssql_object_id
+    ,c.column_id as mssql_column_id
+    ,db_name()      as table_catalog
+    ,s.name         as table_schema
+    ,o.name         as table_name
+    ,case o.type
+        when ''U'' then ''TABLE''
+        when ''V'' then ''VIEW''
+    end as table_type
+    ,c.name as column_name
+    ,columnproperty(c.object_id, c.name, ''ordinal'') as ordinal_position
+    ,convert(nvarchar(4000), object_definition(c.default_object_id)) as column_default
+    ,c.is_nullable as is_nullable
+    ,type_name(c.system_type_id) as system_data_type
+    ,type_name(c.user_type_id) as user_data_type
+    ,columnproperty(c.object_id, c.name, ''charmaxlen'') as character_maximum_length
+    ,convert(tinyint,
+        case
+            -- int/decimal/numeric/real/float/money
+            when c.system_type_id in (48, 52, 56, 59, 60, 62, 106, 108, 122, 127)
+            then c.precision
+        end) as numeric_precision
+    ,convert(int,
+        case
+            -- datetime/smalldatetime
+            when c.system_type_id in (40, 41, 42, 43, 58, 61) then null
+            else odbcscale(c.system_type_id, c.scale)
+        end) as numeric_scale
+    ,convert(smallint,
+        case
+            -- datetime/smalldatetime
+            when c.system_type_id in (40, 41, 42, 43, 58, 61)
+            then odbcscale(c.system_type_id, c.scale)
+        end) as datetime_precision
+    ,c.is_computed as is_computed
+    ,cc.definition as computed_column_definition
+    ,c.is_identity as is_identity
+from sys.objects o
+left join sys.schemas s
+  on s.schema_id = o.schema_id
+join sys.columns c
+  on c.object_id = o.object_id
+left join sys.computed_columns cc
+  on cc.object_id = o.object_id
+ and cc.column_id = c.column_id
+where o.type in (''U'', ''V'')
 '
-if object_id('tempdb..##__cols__D78CEAA3__') is not null drop table ##__cols__D78CEAA3__
 exec sp_executesql @sql
 
-insert into @col_info (
-     mssql_object_id
-    ,mssql_column_id
-    ,table_catalog
-    ,table_schema
-    ,table_name
-    ,quoted_table_name
-    ,table_type
-    ,column_name
-    ,quoted_column_name
-    ,ordinal_position
-    ,column_default
-    ,is_nullable
-    ,data_type
-    ,user_data_type
-    ,sql_full_data_type
-    ,data_type_size
-    ,character_maximum_length
-    ,numeric_precision
-    ,numeric_scale
-    ,datetime_precision
-    ,is_computed
-    ,computed_column_definition
-    ,is_identity
-    ,is_modifiable
-)
-select mssql_object_id
-     , mssql_column_id
-     , table_catalog
-     , table_schema
-     , table_name
-     , quotename(table_schema) + '.' + quotename(table_name) as quoted_table_name
-     , table_type
-     , column_name
-     , quotename(column_name) as quoted_column_name
-     , ordinal_position
-     , column_default
-     , is_nullable
-     , data_type
-     , user_data_type
-     , null as sql_full_data_type
-     , case when t.data_type in ('binary', 'char', 'nchar', 'nvarchar', 'varbinary', 'varchar')
+if object_id('tempdb..#col_info') is not null drop table #col_info
+select *
+     , quotename(t.column_name) as quoted_column_name
+     , cast(null as nvarchar(255)) as sql_full_data_type
+     , case when t.system_data_type in ('binary', 'char', 'nchar', 'nvarchar', 'varbinary', 'varchar')
            then isnull(nullif(cast(t.character_maximum_length as varchar(4)), '-1'), 'max')
-           when t.data_type in ('decimal', 'numeric')
+           when t.system_data_type in ('decimal', 'numeric')
            then cast(t.numeric_precision as varchar(10)) + ',' + cast(t.numeric_scale as varchar(10))
-           when t.data_type in ('datetime2', 'datetimeoffset', 'time')
+           when t.system_data_type in ('datetime2', 'datetimeoffset', 'time')
            then cast(t.datetime_precision as varchar(10))
            else null
        end as data_type_size
-     , character_maximum_length
-     , numeric_precision
-     , numeric_scale
-     , datetime_precision
-     , is_computed
-     , computed_column_definition
-     , is_identity
-     , case when is_identity = 1 or is_computed = 1 or data_type = 'timestamp' then 0
+     , case when is_identity = 1 or is_computed = 1 or system_data_type = 'timestamp' then 0
             else 1
        end as is_modifiable
-from ##__cols__D78CEAA3__ t
-drop table ##__cols__D78CEAA3__
+into #col_info
+from ##col_info_D78CEAA3 t
 
-update @col_info
+if object_id('tempdb..##col_info_D78CEAA3') is not null drop table ##col_info_D78CEAA3
+
+update #col_info
    set sql_full_data_type =
-       case when user_data_type <> data_type then user_data_type
-            else data_type + isnull('(' + data_type_size + ')', '')
+       case when user_data_type <> system_data_type then quotename(user_data_type)
+            else quotename(system_data_type) + isnull('(' + data_type_size + ')', '')
        end
 
 
--- get sys.extended_propertied =================================================
-declare @ext_prop table (
-     [class] tinyint
-    ,[class_desc] nvarchar(60)
-    ,[major_id] int
-    ,[minor_id] int
-    ,[name] nvarchar(128)
-    ,[value] sql_variant
-)
-
--- based on running `sp_helptext 'information_schema.tables'` in master
+-- get sys.extended_properties
+-- make a temp table with the correct structure from current db
+if object_id('tempdb..#sys_extended_properties') is not null drop table #sys_extended_properties
+select top 0 * into #sys_extended_properties from sys.extended_properties
 if @script_type in ('CREATE') begin
-    set @sql = 'use ' + quotename(@database_name) + ';
-        select [class]
-             , [class_desc]
-             , [major_id]
-             , [minor_id]
-             , [name]
-             , [value]
-          into ##__ext_prop__D78CEAA3__
-          from sys.extended_properties ep
-    '
-    if object_id('tempdb..##__ext_prop__D78CEAA3__') is not null drop table ##__ext_prop__D78CEAA3__
+    if object_id('tempdb..##__sys_extended_properties_D78CEAA3__') is not null drop table ##__sys_extended_properties_D78CEAA3__
+    select top 0 * into ##__sys_extended_properties_D78CEAA3__ from #sys_extended_properties
+    set @sql = N'use ' + quotename(@db_name) + ';' + @CRLF +
+               N'insert into ##__sys_extended_properties_D78CEAA3__ select * from sys.extended_properties'
     exec sp_executesql @sql
 
-    insert into @ext_prop (
-        [class]
-        ,[class_desc]
-        ,[major_id]
-        ,[minor_id]
-        ,[name]
-        ,[value]
-    )
-    select [class]
-        , [class_desc]
-        , [major_id]
-        , [minor_id]
-        , [name]
-        , [value]
-    from ##__ext_prop__D78CEAA3__ t
-    drop table ##__ext_prop__D78CEAA3__
+    insert into #sys_extended_properties select * from ##__sys_extended_properties_D78CEAA3__
+
+    if object_id('tempdb..##__sys_extended_properties_D78CEAA3__') is not null drop table ##__sys_extended_properties_D78CEAA3__
 end
+
 
 -- assemble result =============================================================
 declare @result table (
@@ -353,27 +266,27 @@ declare @result table (
     ,table_name nvarchar(128)
     ,table_type varchar(10)
     ,seq bigint
-    ,sql_stmt nvarchar(1000)
+    ,sql_stmt nvarchar(max)
 )
 
 
--- USE =========================================================================
+-- USE
 insert into @result
-select ti.table_catalog
-     , ti.table_schema
-     , ti.table_name
-     , ti.table_type
-     , 100000000 + n.num as seq
+select null as table_catalog
+     , null as table_schema
+     , null as table_name
+     , null as table_type
+     , n.num as seq
      , case n.num
-         when 0 then 'USE ' + quotename(ti.table_catalog)
+         when 0 then 'USE ' + quotename(@db_name)
          when 1 then 'GO'
          when 2 then ''
        end as sql_stmt
-  from @tbl_info ti
- cross apply (select * from @nums x where x.num < 3) n
+  from @nums n
+ where n.num < 3
 
 
--- comment =====================================================================
+-- comment
 if @script_type in ('DROP', 'CREATE') begin
     insert into @result
     select ti.table_catalog
@@ -385,11 +298,11 @@ if @script_type in ('DROP', 'CREATE') begin
            case when ti.table_type = 'VIEW' then 'View'
                 else 'Table'
            end + ' ' + ti.quoted_table_name + space(4) + 'Script Date: ' + @strnow + ' ******/' as sql_stmt
-    from @tbl_info ti
+    from #tbl_info ti
 end
 
 
--- CREATE ======================================================================
+-- CREATE
 if @script_type in ('CREATE') begin
     insert into @result
     select ti.table_catalog
@@ -405,44 +318,110 @@ if @script_type in ('CREATE') begin
              when 4 then 'GO'
              when 5 then ''
            end as sql_stmt
-      from @tbl_info ti
+      from #tbl_info ti
      cross apply (select * from @nums x where x.num < 6) n
+     where ti.table_type = 'TABLE'
 
     insert into @result
     select ti.table_catalog
          , ti.table_schema
          , ti.table_name
          , ti.table_type
-         , 350000000 as seq
+         , 320000000 as seq
          , 'CREATE TABLE ' + ti.quoted_table_name + '(' as sql_stmt
-    from @tbl_info ti
+    from #tbl_info ti
+    where ti.table_type = 'TABLE'
 
     insert into @result
     select ci.table_catalog
          , ci.table_schema
          , ci.table_name
          , ci.table_type
-         , 400000000 + ci.ordinal_position as seq
+         , 340000000 + ci.ordinal_position as seq
          , space(4) + ci.quoted_column_name + ' ' +
-           quotename(ci.user_data_type) +
-           case when ci.user_data_type = ci.data_type then isnull('(' + ci.data_type_size + ')', '') else '' end +
+           quotename(ci.user_data_type) + ci.sql_full_data_type +
            case when ci.is_identity = 1 then ' IDENTITY(1,1)' else '' end +
            case when ci.is_nullable = 0 then ' NOT' else '' end + ' NULL,' as sql_stmt
-     from @col_info ci
+     from #col_info ci
+    where ci.table_type = 'TABLE'
 
     insert into @result
     select ti.table_catalog
          , ti.table_schema
          , ti.table_name
          , ti.table_type
-         , 800000000 as seq
+         , 360000000 as seq
          , ') ON ' + quotename(ti.file_group) as sql_stmt
-    from @tbl_info ti
+     from #tbl_info ti
+    where ti.table_type = 'TABLE'
 
+    insert into @result
+    select ti.table_catalog
+        , ti.table_schema
+        , ti.table_name
+        , ti.table_type
+        , 380000000 + n.num as seq
+        , case n.num
+               when 0 then 'GO'
+               when 1 then ''
+          end as sql_stmt
+     from #tbl_info ti
+    cross apply (select * from @nums x where x.num < 2) n
+    where ti.table_type = 'TABLE'
+
+    -- extended properties: column descriptions
+    insert into @result
+    select ci.table_catalog
+         , ci.table_schema
+         , ci.table_name
+         , ci.table_type
+         , 600000000 + (sep.minor_id * 1000) + n.num as seq
+         , case when n.num = 0
+                then 'EXEC sys.sp_addextendedproperty @name=N''MS_Description'', @value=N''' +
+                     replace(cast(sep.value as nvarchar(max)), @APOS, @APOS + @APOS) + ''' , ' +
+                     '@level0type=N''SCHEMA'','+
+                     '@level0name=N''' + ci.table_schema + ''', ' +
+                     '@level1type=N''TABLE'',' +
+                     '@level1name=N''' + ci.table_name + ''', ' +
+                     '@level2type=N''COLUMN'',' +
+                     '@level2name=N''' + ci.column_name + ''''
+                when n.num = 1 then 'GO'
+                else ''
+           end as sql_stmt
+    from #col_info ci
+    join #sys_extended_properties sep
+      on ci.mssql_object_id = sep.major_id
+     and ci.mssql_column_id = sep.minor_id
+     and sep.name = 'MS_Description'
+   cross apply (select * from @nums x where x.num < 3) n
+
+    -- extended properties: table descriptions
+    insert into @result
+    select ti.table_catalog
+         , ti.table_schema
+         , ti.table_name
+         , ti.table_type
+         , 810000000 + n.num as seq
+         , case when n.num = 0
+                then 'EXEC sys.sp_addextendedproperty @name=N''MS_Description'', @value=N''' +
+                     replace(cast(sep.value as nvarchar(max)), @APOS, @APOS + @APOS) + ''' , ' +
+                     '@level0type=N''SCHEMA'','+
+                     '@level0name=N''' + ti.table_schema + ''', ' +
+                     '@level1type=N''TABLE'',' +
+                     '@level1name=N''' + ti.table_name + ''''
+                when n.num = 1 then 'GO'
+                else ''
+           end as sql_stmt
+    from #tbl_info ti
+    join #sys_extended_properties sep
+      on ti.mssql_object_id = sep.major_id
+     and sep.minor_id = 0
+     and sep.name = 'MS_Description'
+   cross apply (select * from @nums x where x.num < 3) n
 end
 
 
--- DELETE ======================================================================
+-- DELETE
 if @script_type in ('DELETE') begin
     insert into @result
     select ti.table_catalog
@@ -451,7 +430,7 @@ if @script_type in ('DELETE') begin
          , ti.table_type
          , 300000000 as seq
          , 'DELETE FROM ' + ti.quoted_table_name as sql_stmt
-    from @tbl_info ti
+    from #tbl_info ti
 
     insert into @result
     select ti.table_catalog
@@ -460,11 +439,11 @@ if @script_type in ('DELETE') begin
          , ti.table_type
          , 400000000 as seq
          , space(6) + 'WHERE <Search Conditions,,>' as sql_stmt
-    from @tbl_info ti
+    from #tbl_info ti
 end
 
 
--- DROP ========================================================================
+-- DROP
 if @script_type in ('DROP', 'DROP AND CREATE') begin
     insert into @result
     select ti.table_catalog
@@ -477,11 +456,11 @@ if @script_type in ('DROP', 'DROP AND CREATE') begin
                 then 'VIEW'
                 else 'TABLE'
            end + ' ' + ti.quoted_table_name as sql_stmt
-    from @tbl_info ti
+    from #tbl_info ti
 end
 
 
--- INSERT ======================================================================
+-- INSERT
 if @script_type in ('INSERT') begin
     insert into @result
     select ti.table_catalog
@@ -490,7 +469,7 @@ if @script_type in ('INSERT') begin
          , ti.table_type
          , 300000000 as seq
          , 'INSERT INTO ' + ti.quoted_table_name as sql_stmt
-    from @tbl_info ti
+    from #tbl_info ti
 
     insert into @result
     select ci.table_catalog
@@ -510,7 +489,7 @@ if @script_type in ('INSERT') begin
                                          order by x.ordinal_position) as ordinal_rank
                 , row_number() over (partition by x.mssql_object_id
                                          order by x.ordinal_position desc) as ordinal_rank_desc
-               from @col_info x
+               from #col_info x
               where x.is_modifiable = 1
           ) ci
 
@@ -521,7 +500,7 @@ if @script_type in ('INSERT') begin
          , ti.table_type
          , 500000000 as seq
          , space(5) + 'VALUES' as sql_stmt
-    from @tbl_info ti
+    from #tbl_info ti
 
     insert into @result
     select ci.table_catalog
@@ -542,13 +521,13 @@ if @script_type in ('INSERT') begin
                                          order by x.ordinal_position) as ordinal_rank
                 , row_number() over (partition by x.mssql_object_id
                                          order by x.ordinal_position desc) as ordinal_rank_desc
-               from @col_info x
+               from #col_info x
               where x.is_modifiable = 1
           ) ci
 end
 
 
--- SELECT ======================================================================
+-- SELECT
 if @script_type in ('SELECT') begin
     insert into @result
     select ci.table_catalog
@@ -559,7 +538,7 @@ if @script_type in ('SELECT') begin
          , case when ci.ordinal_position = 1 then 'SELECT '
                 else space(6) + ','
            end + ci.quoted_column_name as sql_stmt
-     from @col_info ci
+     from #col_info ci
 
     insert into @result
     select ti.table_catalog
@@ -568,11 +547,11 @@ if @script_type in ('SELECT') begin
          , ti.table_type
          , 500000000 as seq
          , space(2) + 'FROM ' + ti.quoted_table_name as sql_stmt
-     from @tbl_info ti
+     from #tbl_info ti
 end
 
 
--- UPDATE ======================================================================
+-- UPDATE
 if @script_type in ('UPDATE') begin
     insert into @result
     select ti.table_catalog
@@ -581,7 +560,7 @@ if @script_type in ('UPDATE') begin
          , ti.table_type
          , 300000000 as seq
          , 'UPDATE ' + ti.quoted_table_name as sql_stmt
-    from @tbl_info ti
+    from #tbl_info ti
 
     insert into @result
     select ci.table_catalog
@@ -597,37 +576,39 @@ if @script_type in ('UPDATE') begin
      from (select *
                 , row_number() over (partition by x.mssql_object_id
                                      order by x.ordinal_position) as ordinal_rank
-            from @col_info x
+            from #col_info x
            where x.is_modifiable = 1
           ) ci
 end
 
 
--- END GO ======================================================================
-insert into @result
-select ti.table_catalog
-    , ti.table_schema
-    , ti.table_name
-    , ti.table_type
-    , 900000000 + n.num as seq
-    , case n.num
-           when 0 then 'GO'
-           when 1 then ''
-      end as sql_stmt
-from @tbl_info ti
-cross apply (select * from @nums x where x.num < 2) n
-
+-- END GO
+if @script_type in ('DELETE', 'INSERT', 'SELECT', 'UPDATE') begin
+    insert into @result
+    select ti.table_catalog
+        , ti.table_schema
+        , ti.table_name
+        , ti.table_type
+        , 900000000 + n.num as seq
+        , case n.num
+               when 0 then 'GO'
+               when 1 then ''
+          end as sql_stmt
+    from #tbl_info ti
+    cross apply (select * from @nums x where x.num < 2) n
+end
 
 -- return result ===============================================================
 select *
 from @result r
-where (@table_name is null or r.table_name = @table_name)
-and (@schema_name is null or r.table_schema = @schema_name)
+where (r.table_name is null or r.table_name = isnull(@table_name, r.table_name))
+and (r.table_schema is null or r.table_schema = isnull(@schema_name, r.table_schema))
 order by 1, 2, 3, 4, 5
 
+-- clean up
+if object_id('tempdb..#tbl_info') is not null drop table #tbl_info
+if object_id('tempdb..#col_info') is not null drop table #col_info
+--if object_id('tempdb..#sys_extended_properties') is not null drop table #sys_extended_properties
 
--- #DEBUG
---select * from @tbl_info
---select * from @col_info
 end
 go
