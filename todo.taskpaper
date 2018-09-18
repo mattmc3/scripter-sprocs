@@ -1,0 +1,16 @@
+Features:
+	- Operators @done(2018-09-18)
+	- Jobs @done(2018-09-18)
+	- Alerts @done(2018-09-18)
+	- DML - select, insert, update, delete
+	- Views
+	- Stored Procs
+	- User Defined Functions
+	- CLR
+	- Script db
+	
+Maybe Someday:
+	- Add support for PRINT SQL instead of result set SQL
+	- Add support for more modern SQL style (stop SHOUTING, this ain't COBOL)
+	- Add support for SQL Server compatibility modes
+	- Add support for different SQL server edition features
