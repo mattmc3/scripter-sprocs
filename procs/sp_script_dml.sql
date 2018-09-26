@@ -5,7 +5,7 @@ go
 --------------------------------------------------------------------------------
 -- proc     : sp_script_dml
 -- author   : mattmc3
--- version  : v0.4.2
+-- version  : v0.4.4
 -- purpose  : Generates SQL scripts for basic SELECT, INSERT, UPDATE, DELETE
 --            operations
 -- homepage : https://github.com/mattmc3/sqlgen-procs
@@ -41,6 +41,7 @@ end
 declare @strnow nvarchar(50)
       , @sql nvarchar(max)
       , @param_defs nvarchar(1000)
+      , @modifiable_cols int
 
 -- const
 declare @APOS nvarchar(1) = N''''
@@ -79,8 +80,11 @@ select object_id(quotename(ist.table_schema) + ''.'' + quotename(ist.table_name)
      , quotename(ist.table_schema) + ''.'' + quotename(ist.table_name) as quoted_table_name
      , ist.*
   from information_schema.tables ist
+ where ist.table_schema = isnull(@table_schema, ist.table_schema)
+   and ist.table_name = isnull(@table_name, ist.table_name)
 '
-exec sp_executesql @sql
+set @param_defs='@table_name nvarchar(128), @table_schema nvarchar(128)'
+exec sp_executesql @sql, @param_defs, @table_name=@table_name, @table_schema=@table_schema
 
 if object_id('tempdb..#isc') is not null drop table #isc
 select top 0 cast(null as int) as mssql_object_id, cast(null as int) as column_id, *
@@ -96,8 +100,11 @@ select sc.object_id as mssql_object_id
   join sys.columns sc
     on sc.object_id = object_id(quotename(isc.table_schema) + ''.'' + quotename(isc.table_name))
    and sc.name = isc.column_name
+ where isc.table_schema = isnull(@table_schema, isc.table_schema)
+   and isc.table_name = isnull(@table_name, isc.table_name)
 '
-exec sp_executesql @sql
+set @param_defs='@table_name nvarchar(128), @table_schema nvarchar(128)'
+exec sp_executesql @sql, @param_defs, @table_name=@table_name, @table_schema=@table_schema
 
 if object_id('tempdb..#pks') is not null drop table #pks
 create table #pks (object_id int, column_id int, is_primary_key bit)
@@ -159,6 +166,19 @@ select isc.*
   left join #pks p  on sc.object_id = p.object_id
                    and sc.column_id = p.column_id
 
+if object_id('tempdb..#mod_cols') is not null drop table #mod_cols
+select c.*
+     , row_number() over (partition by c.mssql_object_id
+                          order by c.ordinal_position) as ord
+     , row_number() over (partition by c.mssql_object_id
+                          order by c.ordinal_position desc) as ord_desc
+  into #mod_cols
+  from #columns c
+ where c.is_identity <> 1
+   and c.is_rowguidcol <> 1
+
+select @modifiable_cols = count(*) from #mod_cols
+
 -- get the SQL DML ===========================================================
 if object_id('tempdb..#results') is not null drop table #results
 create table #results (
@@ -196,18 +216,20 @@ select t.table_catalog
      , 1 as seq
      , N'INSERT INTO ' + t.quoted_table_name as sql_text
 from #ist t
+where @modifiable_cols > 0
 union all
 select c.table_catalog
      , c.table_schema
      , c.table_name
      , N'insert' as sql_category
-     , 1 + c.ordinal_position
+     , 1 + c.ord
      , replicate(' ', 11) +
-       case when c.ordinal_position = 1 then N'(' else N',' end +
+       case when c.ord = 1 then N'(' else N',' end +
        quotename(c.column_name) +
-       case when c.ordinal_position_desc = 1 then N')' else N'' end
+       case when c.ord_desc = 1 then N')' else N'' end
        as sql_text
-from #columns c
+from #mod_cols c
+where @modifiable_cols > 0
 union all
 select t.table_catalog
      , t.table_schema
@@ -216,18 +238,20 @@ select t.table_catalog
      , 1000 as seq
      , replicate(' ', 5) + N'VALUES' as sql_text
 from #ist t
+where @modifiable_cols > 0
 union all
 select c.table_catalog
      , c.table_schema
      , c.table_name
      , N'insert' as sql_category
-     , 1000 + c.ordinal_position
+     , 1000 + c.ord
      , replicate(' ', 11) +
-       case when c.ordinal_position = 1 then N'(' else N',' end +
+       case when c.ord = 1 then N'(' else N',' end +
        N'<' + c.column_name + N', ' + c.sql_datatype + N',>' +
-       case when c.ordinal_position_desc = 1 then N')' else N'' end
+       case when c.ord_desc = 1 then N')' else N'' end
        as sql_text
-from #columns c
+from #mod_cols c
+where @modifiable_cols > 0
 union all
 select t.table_catalog
      , t.table_schema
@@ -238,6 +262,22 @@ select t.table_catalog
 from #ist t
 cross apply @numbers n
 where n.num < 3
+and @modifiable_cols > 0
+union all
+select t.table_catalog
+     , t.table_schema
+     , t.table_name
+     , N'insert' as sql_category
+     , 20000 + n.num as seq
+     , case n.num
+       when 0 then N'-- ' + t.quoted_table_name + N' contains no columns that can be inserted.'
+       when 1 then N'GO'
+       else N''
+       end as sql_text
+from #ist t
+cross apply @numbers n
+where n.num < 4
+and @modifiable_cols = 0
 
 -- select ====================================================================
 union all
@@ -278,16 +318,18 @@ select t.table_catalog
      , 1 as seq
      , N'UPDATE ' + t.quoted_table_name as sql_text
 from #ist t
+where @modifiable_cols > 0
 union all
 select c.table_catalog
      , c.table_schema
      , c.table_name
      , N'update' as sql_category
-     , 1 + c.ordinal_position
-     , case when c.ordinal_position = 1 then N'   SET ' else N'      ,' end +
+     , 1 + c.ord
+     , case when c.ord = 1 then N'   SET ' else N'      ,' end +
        quotename(c.column_name) + N' = <' + c.column_name + N', ' + c.sql_datatype + N',>'
        as sql_text
-from #columns c
+from #mod_cols c
+where @modifiable_cols > 0
 union all
 select t.table_catalog
      , t.table_schema
@@ -302,8 +344,24 @@ select t.table_catalog
 from #ist t
 cross apply @numbers n
 where n.num < 4
+and @modifiable_cols > 0
+union all
+select t.table_catalog
+     , t.table_schema
+     , t.table_name
+     , N'update' as sql_category
+     , 20000 + n.num as seq
+     , case n.num
+       when 0 then N'-- ' + t.quoted_table_name + N' contains no columns that can be updated.'
+       when 1 then N'GO'
+       else N''
+       end as sql_text
+from #ist t
+cross apply @numbers n
+where n.num < 4
+and @modifiable_cols = 0
 
-
+-- return results ==============================================================
 select *
 from #results
 order by 1, 2, 3, 4, 5
@@ -314,6 +372,7 @@ if object_id('tempdb..#isc') is not null drop table #isc
 if object_id('tempdb..#syscolumns') is not null drop table #syscolumns
 if object_id('tempdb..#systypes') is not null drop table #systypes
 if object_id('tempdb..#columns') is not null drop table #columns
+if object_id('tempdb..#mod_cols') is not null drop table #mod_cols
 if object_id('tempdb..#results') is not null drop table #results
 
 end

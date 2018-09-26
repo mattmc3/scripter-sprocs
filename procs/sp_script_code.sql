@@ -5,7 +5,7 @@ go
 --------------------------------------------------------------------------------
 -- proc     : sp_script_code
 -- author   : mattmc3
--- version  : v0.4.3
+-- version  : v0.4.4
 -- purpose  : Generates SQL scripts for coded sprocs, functions, and views
 -- homepage : https://github.com/mattmc3/sqlgen-procs
 -- license  : MIT - https://github.com/mattmc3/sqlgen-procs/blob/master/LICENSE
