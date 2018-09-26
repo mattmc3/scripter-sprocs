@@ -1,0 +1,22 @@
+Features:
+	- DML - select, insert, update, delete
+	- CLR
+	- Script db
+	- Linked servers
+	- Replication
+	- AGs
+
+Maybe Someday:
+	- Add support for PRINT SQL instead of result set SQL
+	- Add support for more modern SQL style (stop SHOUTING, this ain't COBOL)
+	- Add support for SQL Server compatibility modes
+	- Add support for different SQL server edition features
+	- Consider a better way to name sp_script_code so that views, procs, and funcs don't feel hidden
+
+Archive:
+	- Views @done(2018-09-24) @project(Features)
+	- Stored Procs @done(2018-09-24) @project(Features)
+	- User Defined Functions @done(2018-09-24) @project(Features)
+	- Operators @done(2018-09-18) @project(Features)
+	- Jobs @done(2018-09-18) @project(Features)
+	- Alerts @done(2018-09-18) @project(Features)

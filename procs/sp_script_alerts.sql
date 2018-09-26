@@ -5,7 +5,7 @@ go
 --------------------------------------------------------------------------------
 -- proc     : sp_script_alerts
 -- author   : mattmc3
--- version  : v0.4.2
+-- version  : v0.4.3
 -- purpose  : Generates SQL scripts for SQL Server alerts
 -- homepage : https://github.com/mattmc3/sqlgen-procs
 -- license  : MIT - https://github.com/mattmc3/sqlgen-procs/blob/master/LICENSE
@@ -29,13 +29,13 @@ declare @include_timestamps bit = 1
 set nocount on
 
 select @now = isnull(@now, getdate())
-     , @indent = isnull(@indent, char(9))
+     , @indent = isnull(@indent, replicate(' ', 4))
 
 declare @strnow nvarchar(50)
       , @indent2 nvarchar(16) = replicate(@indent, 2)
 
 -- const
-declare @TICK nvarchar(1) = N''''
+declare @APOS nvarchar(1) = N''''
       , @NL nvarchar(1) = char(10)
 
 -- don't rely on FORMAT() since early SQL Server is missing it
@@ -84,15 +84,15 @@ insert into #sql_parts
 select t.id
      , t.name
      , N'sp_add_alert' as sql_category
-     , N'/****** Object:  Alert [' + replace(t.name, @TICK, @TICK + @TICK) + N']    Script Date: ' + @strnow + N' ******/' + @NL +
-       N'EXEC msdb.dbo.sp_add_alert @name=N''' + replace(t.name, @TICK, @TICK + @TICK) + @TICK +
+     , N'/****** Object:  Alert [' + replace(t.name, @APOS, @APOS + @APOS) + N']' + case when @include_timestamps = 1 then N'    Script Date: ' + @strnow else '' end + N' ******/' + @NL +
+       N'EXEC msdb.dbo.sp_add_alert @name=N''' + replace(t.name, @APOS, @APOS + @APOS) + @APOS +
        case when t.message_id                is null then '' else N',' + @NL + @indent2 + '@message_id='                   + cast(t.message_id as nvarchar) end +
        case when t.severity                  is null then '' else N',' + @NL + @indent2 + '@severity='                     + cast(t.severity as nvarchar) end +
        case when t.enabled                   is null then '' else N',' + @NL + @indent2 + '@enabled='                      + cast(t.enabled as nvarchar) end +
        case when t.delay_between_responses   is null then '' else N',' + @NL + @indent2 + '@delay_between_responses='      + cast(t.delay_between_responses as nvarchar) end +
        case when t.include_event_description is null then '' else N',' + @NL + @indent2 + '@include_event_description_in=' + cast(t.include_event_description as nvarchar) end +
-       case when t.category_name             is null then '' else N',' + @NL + @indent2 + '@category_name=N'''             + cast(t.category_name as nvarchar(40)) + @TICK end +
-       case when t.job_id                    is null then '' else N',' + @NL + @indent2 + '@job_id=N'''                    + lower(cast(t.job_id as nvarchar(40))) + @TICK end +
+       case when t.category_name             is null then '' else N',' + @NL + @indent2 + '@category_name=N'''             + cast(t.category_name as nvarchar(40)) + @APOS end +
+       case when t.job_id                    is null then '' else N',' + @NL + @indent2 + '@job_id=N'''                    + lower(cast(t.job_id as nvarchar(40))) + @APOS end +
        @NL + N'GO' + @NL as sql_text
 from alerts t
 

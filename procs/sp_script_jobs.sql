@@ -5,7 +5,7 @@ go
 --------------------------------------------------------------------------------
 -- proc     : sp_script_jobs
 -- author   : mattmc3
--- version  : v0.4.2
+-- version  : v0.4.3
 -- purpose  : Generates SQL scripts for SQL Agent jobs
 -- homepage : https://github.com/mattmc3/sqlgen-procs
 -- license  : MIT - https://github.com/mattmc3/sqlgen-procs/blob/master/LICENSE
@@ -34,7 +34,7 @@ declare @strnow nvarchar(50)
       , @indent2 nvarchar(16) = replicate(@indent, 2)
 
 -- const
-declare @TICK nvarchar(1) = N''''
+declare @APOS nvarchar(1) = N''''
       , @NL nvarchar(1) = char(10)
 
 -- don't rely on FORMAT() since early SQL Server is missing it
@@ -98,7 +98,7 @@ select j.job_id
      , j.job_name
      , N'header' as sql_category
      , null as sql_subcategory
-     , N'/****** Object:  Job [' + replace(j.job_name, @TICK, @TICK + @TICK) + N']    Script Date: ' + @strnow + N' ******/' + @NL +
+     , N'/****** Object:  Job [' + replace(j.job_name, @APOS, @APOS + @APOS) + N']' + case when @include_timestamps = 1 then N'    Script Date: ' + @strnow else '' end + N' ******/' + @NL +
        N'BEGIN TRANSACTION' + @NL +
        N'DECLARE @ReturnCode INT' + @NL +
        N'SELECT @ReturnCode = 0'
@@ -108,10 +108,10 @@ select j.job_id
      , j.job_name
      , N'sp_add_category' as sql_category
      , null as sql_subcategory
-     , N'/****** Object:  JobCategory [' + replace(j.category_name, @TICK, @TICK + @TICK) + N']    Script Date: ' + @strnow + N' ******/' + @NL +
-       N'IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N''' + replace(j.category_name, @TICK, @TICK + @TICK) + ''' AND category_class=' + cast(j.category_class as nvarchar) + N')' + @NL +
+     , N'/****** Object:  JobCategory [' + replace(j.category_name, @APOS, @APOS + @APOS) + N']    Script Date: ' + @strnow + N' ******/' + @NL +
+       N'IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N''' + replace(j.category_name, @APOS, @APOS + @APOS) + ''' AND category_class=' + cast(j.category_class as nvarchar) + N')' + @NL +
        N'BEGIN' + @NL +
-       N'EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N''JOB'', @type=N''LOCAL'', @name=N''' + replace(j.category_name, @TICK, @TICK + @TICK) + @TICK + @NL +
+       N'EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N''JOB'', @type=N''LOCAL'', @name=N''' + replace(j.category_name, @APOS, @APOS + @APOS) + @APOS + @NL +
        N'IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback' + @NL + @NL +
        N'END' + @NL
 from jobs j
@@ -121,19 +121,19 @@ select j.job_id
      , N'sp_add_job' as sql_category
      , null as sql_subcategory
      , N'DECLARE @jobId BINARY(16)' +
-       @NL + N'EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N''' + replace(j.name, @TICK, @TICK + @TICK) + N'''' +
+       @NL + N'EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N''' + replace(j.name, @APOS, @APOS + @APOS) + N'''' +
        case when j.enabled                      is null then N'' else N', ' + @NL + @indent2 + N'@enabled=' + cast(j.enabled as nvarchar) end +
        case when j.notify_level_eventlog        is null then N'' else N', ' + @NL + @indent2 + N'@notify_level_eventlog='           + cast(j.notify_level_eventlog as nvarchar) end +
        case when j.notify_level_email           is null then N'' else N', ' + @NL + @indent2 + N'@notify_level_email='              + cast(j.notify_level_email as nvarchar) end +
        case when j.notify_level_netsend         is null then N'' else N', ' + @NL + @indent2 + N'@notify_level_netsend='            + cast(j.notify_level_netsend as nvarchar) end +
        case when j.notify_level_page            is null then N'' else N', ' + @NL + @indent2 + N'@notify_level_page='               + cast(j.notify_level_page as nvarchar) end +
        case when j.delete_level                 is null then N'' else N', ' + @NL + @indent2 + N'@delete_level='                    + cast(j.delete_level as nvarchar) end +
-       case when j.description                  is null then N'' else N', ' + @NL + @indent2 + N'@description=N'''                  + replace(j.description, @TICK, @TICK + @TICK) + @TICK end +
-       case when j.category_name                is null then N'' else N', ' + @NL + @indent2 + N'@category_name=N'''                + replace(j.category_name, @TICK, @TICK + @TICK) + @TICK end +
-       case when j.owner_login_name             is null then N'' else N', ' + @NL + @indent2 + N'@owner_login_name=N'''             + replace(j.owner_login_name, @TICK, @TICK + @TICK) + @TICK end +
-       case when j.notify_email_operator_name   is null then N'' else N', ' + @NL + @indent2 + N'@notify_email_operator_name=N'''   + replace(j.notify_email_operator_name, @TICK, @TICK + @TICK) + @TICK end +
-       case when j.notify_netsend_operator_name is null then N'' else N', ' + @NL + @indent2 + N'@notify_netsend_operator_name=N''' + replace(j.notify_netsend_operator_name, @TICK, @TICK + @TICK) + @TICK end +
-       case when j.notify_page_operator_name    is null then N'' else N', ' + @NL + @indent2 + N'@notify_page_operator_name=N'''    + replace(j.notify_page_operator_name, @TICK, @TICK + @TICK) + @TICK end +
+       case when j.description                  is null then N'' else N', ' + @NL + @indent2 + N'@description=N'''                  + replace(j.description, @APOS, @APOS + @APOS) + @APOS end +
+       case when j.category_name                is null then N'' else N', ' + @NL + @indent2 + N'@category_name=N'''                + replace(j.category_name, @APOS, @APOS + @APOS) + @APOS end +
+       case when j.owner_login_name             is null then N'' else N', ' + @NL + @indent2 + N'@owner_login_name=N'''             + replace(j.owner_login_name, @APOS, @APOS + @APOS) + @APOS end +
+       case when j.notify_email_operator_name   is null then N'' else N', ' + @NL + @indent2 + N'@notify_email_operator_name=N'''   + replace(j.notify_email_operator_name, @APOS, @APOS + @APOS) + @APOS end +
+       case when j.notify_netsend_operator_name is null then N'' else N', ' + @NL + @indent2 + N'@notify_netsend_operator_name=N''' + replace(j.notify_netsend_operator_name, @APOS, @APOS + @APOS) + @APOS end +
+       case when j.notify_page_operator_name    is null then N'' else N', ' + @NL + @indent2 + N'@notify_page_operator_name=N'''    + replace(j.notify_page_operator_name, @APOS, @APOS + @APOS) + @APOS end +
        N', @job_id = @jobId OUTPUT' + @NL +
        N'IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback' as sql_text
 from jobs j
@@ -185,7 +185,7 @@ select t.job_id
      , t.job_name
      , N'sp_add_jobschedule' as sql_category
      , t.schedule_id as sql_subcategory
-     , N'EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N''' + replace(t.schedule_name, @TICK, @TICK + @TICK) + @TICK +
+     , N'EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N''' + replace(t.schedule_name, @APOS, @APOS + @APOS) + @APOS +
        case when t.enabled                is null then '' else N', ' + @NL + @indent2 + '@enabled='                + cast(t.enabled as nvarchar) end +
        case when t.freq_type              is null then '' else N', ' + @NL + @indent2 + '@freq_type='              + cast(t.freq_type as nvarchar) end +
        case when t.freq_interval          is null then '' else N', ' + @NL + @indent2 + '@freq_interval='          + cast(t.freq_interval as nvarchar) end +
@@ -197,7 +197,7 @@ select t.job_id
        case when t.active_end_date        is null then '' else N', ' + @NL + @indent2 + '@active_end_date='        + cast(t.active_end_date as nvarchar) end +
        case when t.active_start_time      is null then '' else N', ' + @NL + @indent2 + '@active_start_time='      + cast(t.active_start_time as nvarchar) end +
        case when t.active_end_time        is null then '' else N', ' + @NL + @indent2 + '@active_end_time='        + cast(t.active_end_time as nvarchar) end +
-       case when t.schedule_uid           is null then '' else N', ' + @NL + @indent2 + '@schedule_uid=N'''        + lower(cast(t.schedule_uid as nvarchar(40))) + @TICK end +
+       case when t.schedule_uid           is null then '' else N', ' + @NL + @indent2 + '@schedule_uid=N'''        + lower(cast(t.schedule_uid as nvarchar(40))) + @APOS end +
        @NL + N'IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback' as sql_text
 from sch t
 
@@ -215,8 +215,8 @@ select s.job_id
      , s.job_name
      , 'sp_add_jobstep' as sql_category
      , s.step_id as sql_subcategory
-     , '/****** Object:  Step [' + replace(s.step_name, @TICK, @TICK + @TICK) + ']    Script Date: ' + @strnow + ' ******/' +
-       @NL + 'EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N''' + replace(s.step_name, @TICK, @TICK + @TICK) + @TICK +
+     , '/****** Object:  Step [' + replace(s.step_name, @APOS, @APOS + @APOS) + ']    Script Date: ' + @strnow + ' ******/' +
+       @NL + 'EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N''' + replace(s.step_name, @APOS, @APOS + @APOS) + @APOS +
        case when s.step_id              is null then '' else N', ' + @NL + @indent2 + '@step_id='              + cast(s.step_id as nvarchar) end +
        case when s.cmdexec_success_code is null then '' else N', ' + @NL + @indent2 + '@cmdexec_success_code=' + cast(s.cmdexec_success_code as nvarchar) end +
        case when s.on_success_action    is null then '' else N', ' + @NL + @indent2 + '@on_success_action='    + cast(s.on_success_action as nvarchar) end +
@@ -226,11 +226,11 @@ select s.job_id
        case when s.retry_attempts       is null then '' else N', ' + @NL + @indent2 + '@retry_attempts='       + cast(s.retry_attempts as nvarchar) end +
        case when s.retry_interval       is null then '' else N', ' + @NL + @indent2 + '@retry_interval='       + cast(s.retry_interval as nvarchar) end +
        case when s.os_run_priority      is null then '' else N', ' + @NL + @indent2 + '@os_run_priority='      + cast(s.os_run_priority as nvarchar) end +
-       case when s.subsystem            is null then '' else N', '                 + '@subsystem=N'''         + replace(s.subsystem, @TICK, @TICK + @TICK) + @TICK end +
-       case when s.command              is null then '' else N', ' + @NL + @indent2 + '@command=N'''           + replace(s.command, @TICK, @TICK + @TICK) + @TICK end +
-       case when s.server               is null then '' else N', ' + @NL + @indent2 + '@server=N'''            + replace(s.server, @TICK, @TICK + @TICK) + @TICK end +
-       case when s.database_name        is null then '' else N', ' + @NL + @indent2 + '@database_name=N'''     + replace(s.database_name, @TICK, @TICK + @TICK) + @TICK end +
-       case when s.output_file_name     is null then '' else N', ' + @NL + @indent2 + '@output_file_name=N'''  + replace(s.output_file_name, @TICK, @TICK + @TICK) + @TICK end +
+       case when s.subsystem            is null then '' else N', '                 + '@subsystem=N'''         + replace(s.subsystem, @APOS, @APOS + @APOS) + @APOS end +
+       case when s.command              is null then '' else N', ' + @NL + @indent2 + '@command=N'''           + replace(s.command, @APOS, @APOS + @APOS) + @APOS end +
+       case when s.server               is null then '' else N', ' + @NL + @indent2 + '@server=N'''            + replace(s.server, @APOS, @APOS + @APOS) + @APOS end +
+       case when s.database_name        is null then '' else N', ' + @NL + @indent2 + '@database_name=N'''     + replace(s.database_name, @APOS, @APOS + @APOS) + @APOS end +
+       case when s.output_file_name     is null then '' else N', ' + @NL + @indent2 + '@output_file_name=N'''  + replace(s.output_file_name, @APOS, @APOS + @APOS) + @APOS end +
        case when s.flags                is null then '' else N', ' + @NL + @indent2 + '@flags='                + cast(s.flags as nvarchar) end +
        @NL + 'IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback' as sql_text
 from steps s
