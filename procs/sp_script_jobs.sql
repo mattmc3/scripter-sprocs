@@ -5,7 +5,7 @@ go
 --------------------------------------------------------------------------------
 -- proc     : sp_script_jobs
 -- author   : mattmc3
--- version  : v0.4.4
+-- version  : v0.4.5
 -- purpose  : Generates SQL scripts for SQL Agent jobs
 -- homepage : https://github.com/mattmc3/sqlgen-procs
 -- license  : MIT - https://github.com/mattmc3/sqlgen-procs/blob/master/LICENSE
@@ -30,21 +30,12 @@ set nocount on
 select @now = isnull(@now, getdate())
      , @indent = isnull(@indent, replicate(' ', 4))
 
-declare @strnow nvarchar(50)
+declare @strnow nvarchar(50) = format(@now, 'M/d/yyyy h:mm:ss tt')
       , @indent2 nvarchar(16) = replicate(@indent, 2)
 
 -- const
 declare @APOS nvarchar(1) = N''''
       , @NL nvarchar(1) = char(10)
-
--- don't rely on FORMAT() since early SQL Server is missing it
-select @strnow = cast(datepart(month, @now) as nvarchar(2)) + '/' +
-                 cast(datepart(day, @now) as nvarchar(2)) + '/' +
-                 cast(datepart(year, @now) as nvarchar(4)) + ' ' +
-                 cast(datepart(hour, @now) % 12 as nvarchar(2)) + ':' +
-                 right('0' + cast(datepart(minute, @now) as nvarchar(2)), 2) + ':' +
-                 right('0' + cast(datepart(second, @now) as nvarchar(2)), 2) + ' ' +
-                 case when datepart(hour, @now) < 12 then 'AM' else 'PM' end
 
 -- make helper table of 100 numbers (0-99)
 declare @numbers table (num int)

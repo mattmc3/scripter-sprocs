@@ -5,14 +5,14 @@ go
 --------------------------------------------------------------------------------
 -- proc     : sp_script_dml
 -- author   : mattmc3
--- version  : v0.4.4
+-- version  : v0.4.5
 -- purpose  : Generates SQL scripts for basic SELECT, INSERT, UPDATE, DELETE
 --            operations
 -- homepage : https://github.com/mattmc3/sqlgen-procs
 -- license  : MIT - https://github.com/mattmc3/sqlgen-procs/blob/master/LICENSE
 --------------------------------------------------------------------------------
 alter procedure dbo.sp_script_dml
-    @database_name varchar(128)          -- Script from the database name specified
+    @database_name nvarchar(128)         -- Script from the database name specified
     ,@table_schema nvarchar(128) = null  -- Script only the schema specified
     ,@table_name nvarchar(128) = null    -- Script only the table specified
     ,@dml_type nvarchar(1000) = null     -- Script only the DML type specified
@@ -26,7 +26,7 @@ set nocount on
 -- defaults
 select @now = isnull(@now, getdate())
 
-if @table_schema is not null
+if @table_name is not null and @table_schema is null
 begin
     set @table_schema = isnull(@table_schema, 'dbo')
 end
@@ -38,23 +38,15 @@ if @dml_type is not null and
 end
 
 -- vars
-declare @strnow nvarchar(50)
+declare @strnow nvarchar(50) = format(@now, 'M/d/yyyy h:mm:ss tt')
       , @sql nvarchar(max)
       , @param_defs nvarchar(1000)
       , @modifiable_cols int
+      , @object_id int
 
 -- const
 declare @APOS nvarchar(1) = N''''
       , @NL nvarchar(1) = char(10)
-
--- don't rely on FORMAT() since early SQL Server is missing it
-select @strnow = cast(datepart(month, @now) as nvarchar(2)) + '/' +
-                 cast(datepart(day, @now) as nvarchar(2)) + '/' +
-                 cast(datepart(year, @now) as nvarchar(4)) + ' ' +
-                 cast(datepart(hour, @now) % 12 as nvarchar(2)) + ':' +
-                 right('0' + cast(datepart(minute, @now) as nvarchar(2)), 2) + ':' +
-                 right('0' + cast(datepart(second, @now) as nvarchar(2)), 2) + ' ' +
-                 case when datepart(hour, @now) < 12 then 'AM' else 'PM' end
 
 -- make helper table of 100 numbers (0-99)
 declare @numbers table (num int)
@@ -71,40 +63,44 @@ from numbers n
 option (maxrecursion 100)
 
 -- Pull system tables from other DB ============================================
+-- get object_id for the desired SQL object
+set @param_defs='@table_schema nvarchar(128), @table_name nvarchar(128), @object_id int output'
+set @sql = 'use ' + quotename(@database_name) + '
+select @object_id = object_id(quotename(@table_schema) + ''.'' + quotename(@table_name))'
+exec sp_executesql @sql, @param_defs, @table_schema=@table_schema, @table_name=@table_name, @object_id=@object_id output
+
 if object_id('tempdb..#ist') is not null drop table #ist
-select top 0 cast(null as int) as mssql_object_id, cast(null as nvarchar(256)) as quoted_table_name, * into #ist from information_schema.tables
+select top 0 cast(null as int) as object_id, * into #ist from information_schema.tables
 set @sql = '
 use ' + quotename(@database_name) + '
 insert into #ist
-select object_id(quotename(ist.table_schema) + ''.'' + quotename(ist.table_name)) as mssql_object_id
-     , quotename(ist.table_schema) + ''.'' + quotename(ist.table_name) as quoted_table_name
+select object_id(quotename(ist.table_schema) + ''.'' + quotename(ist.table_name)) as object_id
      , ist.*
   from information_schema.tables ist
- where ist.table_schema = isnull(@table_schema, ist.table_schema)
-   and ist.table_name = isnull(@table_name, ist.table_name)
+ where @object_id is null
+    or @object_id = object_id(quotename(ist.table_schema) + ''.'' + quotename(ist.table_name))
 '
-set @param_defs='@table_name nvarchar(128), @table_schema nvarchar(128)'
-exec sp_executesql @sql, @param_defs, @table_name=@table_name, @table_schema=@table_schema
+set @param_defs='@object_id int'
+exec sp_executesql @sql, @param_defs, @object_id=@object_id
 
 if object_id('tempdb..#isc') is not null drop table #isc
-select top 0 cast(null as int) as mssql_object_id, cast(null as int) as column_id, *
+select top 0 cast(null as int) as object_id, cast(null as int) as column_id, *
 into #isc
 from information_schema.columns
 set @sql = '
 use ' + quotename(@database_name) + '
 insert into #isc
-select sc.object_id as mssql_object_id
+select sc.object_id as object_id
      , sc.column_id
      , isc.*
   from information_schema.columns isc
   join sys.columns sc
     on sc.object_id = object_id(quotename(isc.table_schema) + ''.'' + quotename(isc.table_name))
    and sc.name = isc.column_name
- where isc.table_schema = isnull(@table_schema, isc.table_schema)
-   and isc.table_name = isnull(@table_name, isc.table_name)
+ where sc.object_id = isnull(@object_id, sc.object_id)
 '
-set @param_defs='@table_name nvarchar(128), @table_schema nvarchar(128)'
-exec sp_executesql @sql, @param_defs, @table_name=@table_name, @table_schema=@table_schema
+set @param_defs='@object_id int'
+exec sp_executesql @sql, @param_defs, @object_id=@object_id
 
 if object_id('tempdb..#pks') is not null drop table #pks
 create table #pks (object_id int, column_id int, is_primary_key bit)
@@ -117,19 +113,32 @@ select sic.object_id, sic.column_id, si.is_primary_key
     on sic.object_id = si.object_id
    and si.index_id = sic.index_id
  where si.is_primary_key = 1
+ and si.object_id = isnull(@object_id, si.object_id)
 '
-exec sp_executesql @sql
+set @param_defs='@object_id int'
+exec sp_executesql @sql, @param_defs, @object_id=@object_id
 
 if object_id('tempdb..#syscols') is not null drop table #syscols
 select top 0 * into #syscols from sys.columns
-set @sql = 'insert into #syscols select * from ' + quotename(@database_name) + '.sys.columns'
-exec sp_executesql @sql
+set @sql = '
+insert into #syscols
+select *
+from ' + quotename(@database_name) + '.sys.columns sc
+where sc.object_id = isnull(@object_id, sc.object_id)'
+set @param_defs='@object_id int'
+exec sp_executesql @sql, @param_defs, @object_id=@object_id
 
 if object_id('tempdb..#systypes') is not null drop table #systypes
 select top 0 * into #systypes from sys.types
 set @sql = 'insert into #systypes select * from ' + quotename(@database_name) + '.sys.types'
 exec sp_executesql @sql
 -- =============================================================================
+
+if object_id('tempdb..#tables') is not null drop table #tables
+select ist.*
+     , quotename(ist.table_schema) + '.' + quotename(ist.table_name) as quoted_table_name
+into #tables
+from #ist ist
 
 if object_id('tempdb..#columns') is not null drop table #columns
 select isc.*
@@ -139,7 +148,7 @@ select isc.*
      , sc.is_rowguidcol
      , sc.is_computed
      , isnull(p.is_primary_key, 0) as is_primary_key
-     , row_number() over (partition by isc.mssql_object_id
+     , row_number() over (partition by isc.object_id
                           order by isc.ordinal_position desc) as ordinal_position_desc
      , case
        when sc.user_type_id <> sc.system_type_id
@@ -158,8 +167,8 @@ select isc.*
        end as sql_datatype
   into #columns
   from #isc isc
-  join #ist ist on isc.mssql_object_id = ist.mssql_object_id
-  join #syscols sc  on sc.object_id = isc.mssql_object_id
+  join #ist ist     on isc.object_id = ist.object_id
+  join #syscols sc  on sc.object_id = isc.object_id
                    and sc.column_id = isc.column_id
   join #systypes st on sc.system_type_id = st.user_type_id
   join #systypes ut on sc.user_type_id = ut.user_type_id
@@ -168,9 +177,9 @@ select isc.*
 
 if object_id('tempdb..#mod_cols') is not null drop table #mod_cols
 select c.*
-     , row_number() over (partition by c.mssql_object_id
+     , row_number() over (partition by c.object_id
                           order by c.ordinal_position) as ord
-     , row_number() over (partition by c.mssql_object_id
+     , row_number() over (partition by c.object_id
                           order by c.ordinal_position desc) as ord_desc
   into #mod_cols
   from #columns c
@@ -191,6 +200,16 @@ create table #results (
 )
 
 insert into #results
+select null, null, null, null
+     , n.num as seq
+     , case n.num
+       when 0 then 'USE ' + quotename(@database_name)
+       when 1 then 'GO'
+       when 2 then ''
+       end as sql_text
+from @numbers n
+where n.num < 3
+union all
 -- delete ====================================================================
 select t.table_catalog
      , t.table_schema
@@ -203,7 +222,7 @@ select t.table_catalog
        when 2 then N'GO'
        else N''
        end as sql_text
-from #ist t
+from #tables t
 cross apply @numbers n
 where n.num < 5
 
@@ -215,7 +234,7 @@ select t.table_catalog
      , N'insert' as sql_category
      , 1 as seq
      , N'INSERT INTO ' + t.quoted_table_name as sql_text
-from #ist t
+from #tables t
 where @modifiable_cols > 0
 union all
 select c.table_catalog
@@ -237,7 +256,7 @@ select t.table_catalog
      , N'insert' as sql_category
      , 1000 as seq
      , replicate(' ', 5) + N'VALUES' as sql_text
-from #ist t
+from #tables t
 where @modifiable_cols > 0
 union all
 select c.table_catalog
@@ -259,7 +278,7 @@ select t.table_catalog
      , N'insert' as sql_category
      , 20000 + n.num as seq
      , case when n.num = 0 then N'GO' else N'' end as sql_text
-from #ist t
+from #tables t
 cross apply @numbers n
 where n.num < 3
 and @modifiable_cols > 0
@@ -274,7 +293,7 @@ select t.table_catalog
        when 1 then N'GO'
        else N''
        end as sql_text
-from #ist t
+from #tables t
 cross apply @numbers n
 where n.num < 4
 and @modifiable_cols = 0
@@ -297,7 +316,7 @@ select t.table_catalog
      , N'select' as sql_category
      , 9999 as seq
      , N'  FROM ' + t.quoted_table_name as sql_text
-from #ist t
+from #tables t
 union all
 select t.table_catalog
      , t.table_schema
@@ -305,7 +324,7 @@ select t.table_catalog
      , N'select' as sql_category
      , 10000 + n.num as seq
      , case when n.num = 0 then N'GO' else N'' end as sql_text
-from #ist t
+from #tables t
 cross apply @numbers n
 where n.num < 3
 
@@ -317,7 +336,7 @@ select t.table_catalog
      , N'update' as sql_category
      , 1 as seq
      , N'UPDATE ' + t.quoted_table_name as sql_text
-from #ist t
+from #tables t
 where @modifiable_cols > 0
 union all
 select c.table_catalog
@@ -341,7 +360,7 @@ select t.table_catalog
        when n.num = 1 then N'GO'
        else N''
        end as sql_text
-from #ist t
+from #tables t
 cross apply @numbers n
 where n.num < 4
 and @modifiable_cols > 0
@@ -356,7 +375,7 @@ select t.table_catalog
        when 1 then N'GO'
        else N''
        end as sql_text
-from #ist t
+from #tables t
 cross apply @numbers n
 where n.num < 4
 and @modifiable_cols = 0
@@ -371,6 +390,7 @@ if object_id('tempdb..#ist') is not null drop table #ist
 if object_id('tempdb..#isc') is not null drop table #isc
 if object_id('tempdb..#syscolumns') is not null drop table #syscolumns
 if object_id('tempdb..#systypes') is not null drop table #systypes
+if object_id('tempdb..#tables') is not null drop table #tables
 if object_id('tempdb..#columns') is not null drop table #columns
 if object_id('tempdb..#mod_cols') is not null drop table #mod_cols
 if object_id('tempdb..#results') is not null drop table #results
